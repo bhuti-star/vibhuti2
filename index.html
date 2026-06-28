@@ -247,8 +247,10 @@ const exSel = $("exercise"), lastCard = $("lastCard"), pbCard = $("pbCard"),
       saveBtn = $("saveBtn"), toast = $("toast");
 
 /* ---- init ---- */
-let initData = null;       // cached backend response from page load
-let currentGroup = null;   // "Group A" / "Group B" once chosen on the landing screen
+let initData = null;        // cached backend response from page load
+let currentGroup = null;    // "Group A" / "Group B" once chosen on the landing screen
+let allExercises = [];       // live list of names from the sheet's Exercises tab
+let exerciseGroups = {};     // name -> "Group A"/"Group B", derived from logged data (backend)
 
 $("today").textContent = new Date().toLocaleDateString("en-GB",
   { day:"2-digit", month:"short", year:"numeric" });
@@ -284,12 +286,31 @@ function enterDashboard(group){
   currentGroup = group;
   $("landing").style.display = "none";
   $("app").style.display = "block";
-  populateExercises(GROUP_EXERCISES[group] || EXERCISES);  // only this group's exercises, in order
-  $("group").value = group;                                // pre-tag new sets with the chosen group
+  populateExercises(orderedGroupList(group));   // group's exercises, synced with the sheet, in order
+  $("group").value = group;                     // pre-tag new sets with the chosen group
   if(initData){
     if(initData.groupStatus) renderStatus(initData.groupStatus);
     renderToday(initData.todayWorkout);
   }
+}
+
+/* Build the dropdown list for a group:
+   - membership: each exercise's group is derived from the logged data (backend);
+     if an exercise has no A/B history yet, fall back to the manual GROUP_EXERCISES guide.
+   - order: the manual guide first (as a hint), then any remaining members alphabetically.
+   - source of names: the live Exercises tab, so added/edited exercises persist. */
+function orderedGroupList(group){
+  const guide = GROUP_EXERCISES[group] || [];
+  if(!allExercises.length) return guide.slice();           // offline fallback
+  const inGroup = name => {
+    const g = exerciseGroups[name];
+    return g ? (g === group) : guide.includes(name);
+  };
+  const members = allExercises.filter(inGroup);
+  const inGuideOrder = guide.filter(n => members.includes(n));
+  const rest = members.filter(n => !guide.includes(n))
+                      .sort((a,b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1);
+  return [...inGuideOrder, ...rest];
 }
 
 function backToLanding(){
@@ -332,19 +353,18 @@ async function addExercise(){
   if(!name){ showToast("Type a name first", true); return; }
   const btn = $("addExBtn"); btn.disabled = true; btn.textContent = "Adding…";
   try{
-    const r = await fetch(API_URL, { method:"POST", body: JSON.stringify({ action:"addExercise", exercise:name }) });
+    // send the chosen group so the new exercise is tagged + persists in the right dropdown
+    const r = await fetch(API_URL, { method:"POST", body: JSON.stringify({ action:"addExercise", exercise:name, group: currentGroup || "" }) });
     const textBody = await r.text();          // read raw first so we can see non-JSON replies
     let j;
     try { j = JSON.parse(textBody); }
     catch(e){ throw new Error("Server sent non-JSON: " + textBody.slice(0, 90)); }
     if(!j.ok) throw new Error(j.error || "Server returned ok:false");
-    // keep the current group filter; just add the new name to it
-    if(currentGroup && GROUP_EXERCISES[currentGroup]){
-      if(!GROUP_EXERCISES[currentGroup].includes(name)) GROUP_EXERCISES[currentGroup].push(name);
-      populateExercises(GROUP_EXERCISES[currentGroup], name);
-    } else {
-      populateExercises(j.exercises, name);
-    }
+    if(j.exercises) allExercises = j.exercises;            // refresh from the sheet
+    if(j.exerciseGroups) exerciseGroups = j.exerciseGroups;
+    const list = currentGroup ? orderedGroupList(currentGroup) : allExercises;
+    if(!list.includes(name)) list.push(name);             // safety net
+    populateExercises(list, name);
     hideAddBox();
     showToast("Added ✓");
     loadExercise(name);                     // show its (empty) cards, ready to log
@@ -363,6 +383,8 @@ async function loadInit(){
     const j = await r.json();
     if(j.ok){
       initData = j;
+      allExercises = j.exercises || [];
+      exerciseGroups = j.exerciseGroups || {};
       renderLanding(j.groupStatus);
     } else {
       renderLanding(null);
