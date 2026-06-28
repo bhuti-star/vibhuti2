@@ -303,8 +303,8 @@ function orderedGroupList(group){
   const guide = GROUP_EXERCISES[group] || [];
   if(!allExercises.length) return guide.slice();           // offline fallback
   const inGroup = name => {
-    const g = exerciseGroups[name];
-    return g ? (g === group) : guide.includes(name);
+    const g = exerciseGroups[name];   // array of groups this exercise belongs to (can be both)
+    return (Array.isArray(g) && g.length) ? g.includes(group) : guide.includes(name);
   };
   const members = allExercises.filter(inGroup);
   const inGuideOrder = guide.filter(n => members.includes(n));
