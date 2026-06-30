@@ -61,6 +61,15 @@
   }
   button:active{transform:translateY(1px)}
   button:disabled{opacity:.5; cursor:default}
+  .combo{position:relative;}
+  .suggestions{position:absolute; left:0; right:0; top:100%; z-index:20; margin-top:4px;
+    background:var(--card2); border:1px solid var(--line); border-radius:12px; max-height:300px;
+    overflow-y:auto; box-shadow:0 12px 32px rgba(0,0,0,.45);}
+  .suggestions .opt{padding:12px 14px; cursor:pointer; font-size:15px; border-bottom:1px solid var(--line);}
+  .suggestions .opt:last-child{border-bottom:none;}
+  .suggestions .opt.active, .suggestions .opt:hover{background:var(--card);}
+  .suggestions .opt.add{color:var(--accent2); font-weight:700;}
+  .suggestions .none{padding:12px 14px; color:var(--muted); font-size:14px;}
   .addrow{display:flex; gap:8px; margin-top:8px;}
   button.mini{width:auto; flex:1; margin-top:0; padding:11px 14px; font-size:14px;}
   button.ghost{background:var(--card2); color:var(--text); border:1px solid var(--line);}
@@ -112,11 +121,12 @@
     </div>
   </header>
 
-  <!-- Exercise picker -->
-  <label for="exercise">Select exercise</label>
-  <select id="exercise">
-    <option value="" selected disabled>Choose an exercise…</option>
-  </select>
+  <!-- Exercise picker (type to search) -->
+  <label for="exerciseInput">Select exercise</label>
+  <div class="combo">
+    <input id="exerciseInput" type="text" autocomplete="off" placeholder="Type to search exercises…" />
+    <div id="exerciseSuggestions" class="suggestions" style="display:none"></div>
+  </div>
 
   <!-- Inline "add new exercise" box (hidden until "Add new exercise…" is picked) -->
   <div id="addExWrap" style="display:none; margin-top:10px;">
@@ -238,7 +248,8 @@ const GROUP_EXERCISES = {
 
 /* ---- elements ---- */
 const $ = id => document.getElementById(id);
-const exSel = $("exercise"), lastCard = $("lastCard"), pbCard = $("pbCard"),
+const exInput = $("exerciseInput"), sugg = $("exerciseSuggestions"),
+      lastCard = $("lastCard"), pbCard = $("pbCard"),
       todayCard = $("todayCard"), todayBody = $("todayBody"),
       entryCard = $("entryCard"), placeholder = $("placeholder"),
       lastSessionsEl = $("lastSessions"),
@@ -251,11 +262,19 @@ let initData = null;        // cached backend response from page load
 let currentGroup = null;    // "Group A" / "Group B" once chosen on the landing screen
 let allExercises = [];       // live list of names from the sheet's Exercises tab
 let exerciseGroups = {};     // name -> "Group A"/"Group B", derived from logged data (backend)
+let currentList = [];        // exercises shown in the search box (current group, in order)
+let activeIdx = -1;          // highlighted suggestion for keyboard nav
 
 $("today").textContent = new Date().toLocaleDateString("en-GB",
   { day:"2-digit", month:"short", year:"numeric" });
 
-exSel.addEventListener("change", onExerciseChange);
+// Searchable exercise box
+exInput.addEventListener("input", renderSuggestions);
+exInput.addEventListener("focus", renderSuggestions);
+exInput.addEventListener("keydown", onSearchKey);
+sugg.addEventListener("mousedown", onSuggestionClick);   // mousedown so it fires before blur
+document.addEventListener("click", e => { if(!e.target.closest(".combo")) hideSuggestions(); });
+
 saveBtn.addEventListener("click", saveSet);
 $("addExBtn").addEventListener("click", addExercise);
 $("addExCancel").addEventListener("click", hideAddBox);
@@ -319,32 +338,64 @@ function backToLanding(){
   // reset the dashboard view
   placeholder.style.display = "block";
   lastCard.style.display = pbCard.style.display = entryCard.style.display = "none";
-  hideAddBox();
+  exInput.value = ""; hideSuggestions(); hideAddBox();
 }
 
-/* ---- build the dropdown from a list of names ---- */
+/* ---- searchable exercise box ---- */
+// Set the list of exercises the search box draws from (current group, in order).
 function populateExercises(list, selectVal){
-  exSel.innerHTML = "";
-  const ph = document.createElement("option");
-  ph.value = ""; ph.textContent = "Choose an exercise…"; ph.disabled = true;
-  if(!selectVal) ph.selected = true;
-  exSel.appendChild(ph);
-  list.forEach(name => {
-    const o = document.createElement("option"); o.value = name; o.textContent = name;
-    if(name === selectVal) o.selected = true;
-    exSel.appendChild(o);
-  });
-  const add = document.createElement("option");
-  add.value = "__add__"; add.textContent = "➕  Add new exercise…";
-  exSel.appendChild(add);
+  currentList = list.slice();
+  exInput.value = selectVal || "";
+  hideSuggestions();
 }
 
-function onExerciseChange(){
-  if(exSel.value === "__add__"){ showAddBox(); return; }
-  hideAddBox();
-  loadExercise(exSel.value);
+// Render the filtered suggestions as the user types (substring match, anywhere in the name).
+function renderSuggestions(){
+  const q = exInput.value.trim().toLowerCase();
+  const matches = currentList.filter(n => n.toLowerCase().includes(q));
+  let html = matches.length
+    ? matches.map(n => `<div class="opt" data-name="${esc(n)}">${esc(n)}</div>`).join("")
+    : `<div class="none">No match${q ? ` for "${esc(exInput.value.trim())}"` : ""}</div>`;
+  html += `<div class="opt add" data-add="1">➕  Add new exercise…</div>`;
+  sugg.innerHTML = html;
+  sugg.style.display = "block";
+  activeIdx = -1;
 }
-function showAddBox(){ $("addExWrap").style.display = "block"; exSel.value = ""; $("newExName").value = ""; $("newExName").focus(); }
+function hideSuggestions(){ sugg.style.display = "none"; activeIdx = -1; }
+
+function onSuggestionClick(e){
+  const opt = e.target.closest(".opt");
+  if(!opt) return;
+  e.preventDefault();
+  if(opt.dataset.add){ showAddBox(); return; }
+  if(opt.dataset.name) chooseExercise(opt.dataset.name);
+}
+
+function chooseExercise(name){
+  exInput.value = name;
+  hideSuggestions();
+  hideAddBox();
+  loadExercise(name);
+}
+
+// Keyboard: arrows move the highlight, Enter picks it, Escape closes.
+function onSearchKey(e){
+  const opts = [...sugg.querySelectorAll(".opt")];
+  if(e.key === "ArrowDown"){ e.preventDefault(); if(sugg.style.display==="none") renderSuggestions(); activeIdx = Math.min(activeIdx+1, opts.length-1); paintActive(opts); }
+  else if(e.key === "ArrowUp"){ e.preventDefault(); activeIdx = Math.max(activeIdx-1, 0); paintActive(opts); }
+  else if(e.key === "Enter"){
+    e.preventDefault();
+    if(activeIdx >= 0 && opts[activeIdx]) opts[activeIdx].dispatchEvent(new MouseEvent("mousedown", {bubbles:true}));
+    else { const first = sugg.querySelector(".opt[data-name]"); if(first) chooseExercise(first.dataset.name); }
+  }
+  else if(e.key === "Escape"){ hideSuggestions(); }
+}
+function paintActive(opts){
+  opts.forEach((o,i) => o.classList.toggle("active", i === activeIdx));
+  if(opts[activeIdx]) opts[activeIdx].scrollIntoView({block:"nearest"});
+}
+
+function showAddBox(){ $("addExWrap").style.display = "block"; $("newExName").value = exInput.value.trim(); $("newExName").focus(); hideSuggestions(); }
 function hideAddBox(){ $("addExWrap").style.display = "none"; }
 
 /* ---- add a new exercise to the backend list ---- */
@@ -481,7 +532,7 @@ function renderToday(list){
 
 /* ---- save a new set ---- */
 async function saveSet(){
-  const exercise = exSel.value;
+  const exercise = exInput.value.trim();
   const weight = parseFloat($("weight").value);
   const reps = parseInt($("reps").value, 10);
   const group = $("group").value;
